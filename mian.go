@@ -48,6 +48,9 @@ func NewQQNeuralStyle(proxies []string, logger *zap.Logger) (*Style, error) {
 	qq := Style{
 		logger: logger,
 	}
+	if qq.logger == nil {
+		qq.logger = zap.NewNop()
+	}
 	for _, proxy := range proxies {
 		proxyUrl, err := url.Parse(proxy)
 		if err != nil {
@@ -162,7 +165,7 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 	var extra Extra
 	err = json.Unmarshal([]byte(response.Extra), &extra)
 	if err != nil {
-		qq.logger.Error("failed to unmarshal extra", zap.Error(err))
+		qq.logger.Error("failed to unmarshal extra", zap.Error(err), zap.String("extra", response.Extra))
 		return "", err
 	}
 
