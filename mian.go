@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/disintegration/imaging"
+	"go.uber.org/zap"
 	"image"
 	"image/jpeg"
 	"io"
@@ -24,6 +25,7 @@ const (
 
 type Style struct {
 	Clients []*http.Client
+	logger  *zap.Logger
 
 	getClient func() *http.Client
 }
@@ -42,11 +44,14 @@ type Extra struct {
 	Videos  []string `json:"videos"`
 }
 
-func NewQQNeuralStyle(proxies []string) (*Style, error) {
-	var qq Style
+func NewQQNeuralStyle(proxies []string, logger *zap.Logger) (*Style, error) {
+	qq := Style{
+		logger: logger,
+	}
 	for _, proxy := range proxies {
 		proxyUrl, err := url.Parse(proxy)
 		if err != nil {
+			qq.logger.Error("failed to parse proxy url", zap.Error(err))
 			return nil, fmt.Errorf("failed to parse proxy url: %w", err)
 		}
 		qq.Clients = append(qq.Clients, &http.Client{
@@ -59,6 +64,7 @@ func NewQQNeuralStyle(proxies []string) (*Style, error) {
 
 	switch len(qq.Clients) {
 	case 0:
+		qq.logger.Error("no proxy provided")
 		return nil, fmt.Errorf("no proxies provided")
 	case 1:
 		qq.getClient = func() *http.Client {
@@ -87,6 +93,7 @@ func (qq *Style) setHeaders(req *http.Request, length int) {
 func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 	imgBytes, err := io.ReadAll(img)
 	if err != nil {
+		qq.logger.Error("failed to read image", zap.Error(err))
 		return "", err
 	}
 
@@ -97,6 +104,7 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 		"images": []string{base64.StdEncoding.EncodeToString(imgBytes)},
 	})
 	if err != nil {
+		qq.logger.Error("failed to marshal payload", zap.Error(err))
 		return "", err
 	}
 
@@ -107,6 +115,7 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 		bytes.NewBuffer(payload),
 	)
 	if err != nil {
+		qq.logger.Error("failed to create request", zap.Error(err))
 		return "", err
 	}
 	qq.setHeaders(req, len(payload))
@@ -114,6 +123,7 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 	var resp *http.Response
 	resp, err = client.Do(req)
 	if err != nil {
+		qq.logger.Error("failed to send request", zap.Error(err))
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -121,34 +131,43 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 	var response Response
 	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
-		panic(err)
+		qq.logger.Error("failed to decode response", zap.Error(err))
+		return "", err
 	}
 
 	switch response.Msg {
 	case "VOLUMN_LIMIT":
+		qq.logger.Error("volumn limit")
 		return "", fmt.Errorf("rate limit exceeded")
 	case "IMG_ILLEGAL":
+		qq.logger.Error("image illegal")
 		return "", fmt.Errorf("image is illegal")
 	}
 
 	switch response.Code {
 	case 1001:
+		qq.logger.Error("invalid busiId")
 		return "", fmt.Errorf("face not found")
 	case -2100: // request image is invalid
+		qq.logger.Error("invalid image")
 		return "", fmt.Errorf("image is invalid")
 	case 2119: // user_ip_country
+		qq.logger.Error("invalid country")
 		return "", fmt.Errorf("user ip country")
 	case -2111: // service upgrading
+		qq.logger.Error("service upgrading")
 		return "", fmt.Errorf("service upgrading")
 	}
 
 	var extra Extra
 	err = json.Unmarshal([]byte(response.Extra), &extra)
 	if err != nil {
-		panic(err)
+		qq.logger.Error("failed to unmarshal extra", zap.Error(err))
+		return "", err
 	}
 
 	if len(extra.ImgURLs) < 4 {
+		qq.logger.Error("invalid image urls", zap.Int("length", len(extra.ImgURLs)))
 		return "", fmt.Errorf("image url not found")
 	}
 	return extra.ImgURLs[2], nil
@@ -158,11 +177,13 @@ func (qq *Style) Process(img io.Reader) (io.Reader, error) {
 	client := qq.getClient()
 	imgUrl, err := qq.request(img, client)
 	if err != nil {
+		qq.logger.Error("failed to request", zap.Error(err))
 		return nil, err
 	}
 	var qqImg io.Reader
 	qqImg, err = qq.downloadImage(imgUrl, client)
 	if err != nil {
+		qq.logger.Error("failed to download image", zap.Error(err))
 		return nil, err
 	}
 
@@ -172,6 +193,7 @@ func (qq *Style) Process(img io.Reader) (io.Reader, error) {
 func (qq *Style) downloadImage(url string, client *http.Client) (io.Reader, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
+		qq.logger.Error("failed to create request", zap.Error(err))
 		return nil, err
 	}
 	qq.setHeaders(req, 0)
@@ -179,12 +201,14 @@ func (qq *Style) downloadImage(url string, client *http.Client) (io.Reader, erro
 	var resp *http.Response
 	resp, err = client.Do(req)
 	if err != nil {
+		qq.logger.Error("failed to send request", zap.Error(err))
 		return nil, err
 	}
 	defer resp.Body.Close()
 	var img []byte
 	img, err = io.ReadAll(resp.Body)
 	if err != nil {
+		qq.logger.Error("failed to read image", zap.Error(err))
 		return nil, err
 	}
 	return bytes.NewReader(img), nil
@@ -193,12 +217,14 @@ func (qq *Style) downloadImage(url string, client *http.Client) (io.Reader, erro
 func (qq *Style) cropImage(img io.Reader) (io.Reader, error) {
 	imgBytes, err := io.ReadAll(img)
 	if err != nil {
+		qq.logger.Error("failed to read image", zap.Error(err))
 		return nil, err
 	}
 
 	var imgDecoded image.Image
 	imgDecoded, _, err = image.Decode(bytes.NewReader(imgBytes))
 	if err != nil {
+		qq.logger.Error("failed to decode image", zap.Error(err))
 		return nil, err
 	}
 
@@ -225,6 +251,7 @@ func (qq *Style) cropImage(img io.Reader) (io.Reader, error) {
 	imgCroppedBytes := new(bytes.Buffer)
 	err = jpeg.Encode(imgCroppedBytes, imgCropped, nil)
 	if err != nil {
+		qq.logger.Error("failed to encode image", zap.Error(err))
 		return nil, err
 	}
 
