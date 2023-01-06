@@ -196,7 +196,7 @@ func (qq *Style) request(img io.Reader, client *http.Client, isRetry ...bool) (s
 		if err != nil {
 			return "", err
 		}
-		return qq.request(faceHackImg, client)
+		return qq.request(faceHackImg, client, true)
 	case -2100: // request image is invalid
 		qq.logger.Error(InvalidImageErr.Error())
 		return "", InvalidImageErr
