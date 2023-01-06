@@ -9,7 +9,7 @@ import (
 
 func main() {
 	proxies := strings.Split(os.Getenv("PROXIES"), ",")
-	qq, err := qqNeural.NewQQNeuralStyle(proxies)
+	qq, err := qqNeural.NewQQNeuralStyle(proxies, nil)
 	if err != nil {
 		panic(err)
 	}

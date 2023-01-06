@@ -9,11 +9,14 @@ import (
 	"github.com/disintegration/imaging"
 	"go.uber.org/zap"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -150,7 +153,11 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 	switch response.Code {
 	case 1001:
 		qq.logger.Error("face not found")
-		return "", fmt.Errorf("face not found")
+		faceHackImg, err := qq.FaceHack(bytes.NewBuffer(imgBytes))
+		if err != nil {
+			return "", err
+		}
+		return qq.request(faceHackImg, client)
 	case -2100: // request image is invalid
 		qq.logger.Error("invalid image")
 		return "", fmt.Errorf("image is invalid")
@@ -248,15 +255,15 @@ func (qq *Style) cropImage(img io.Reader) (io.Reader, error) {
 		cropRight = 22
 		cropBottom = 202
 	} else {
+		cropLeft = 27
 		cropTop = 29
-		cropLeft = 29
-		cropRight = 20
-		cropBottom = 195
+		cropRight = 30
+		cropBottom = 213
 	}
 	cropWidth = imgWidth - cropLeft - cropRight
 	cropHeight = imgHeight - cropTop - cropBottom
-
-	imgCropped := imaging.Crop(imgDecoded, image.Rect(cropLeft, cropTop, cropWidth, cropHeight))
+	cropRect := image.Rect(cropLeft, cropTop, cropLeft+cropWidth, cropTop+cropHeight)
+	imgCropped := imaging.Crop(imgDecoded, cropRect)
 
 	imgCroppedBytes := new(bytes.Buffer)
 	err = jpeg.Encode(imgCroppedBytes, imgCropped, nil)
@@ -266,4 +273,84 @@ func (qq *Style) cropImage(img io.Reader) (io.Reader, error) {
 	}
 
 	return imgCroppedBytes, nil
+}
+
+const (
+	FaceHackSize  = 170
+	FaceHackSpace = 200
+)
+
+func (qq *Style) FaceHack(srcImg io.Reader) (io.Reader, error) {
+	faceHackFile, err := os.Open("face_hack.jpg")
+	if err != nil {
+		qq.logger.Error("failed to open face hack file", zap.Error(err))
+		return nil, err
+	}
+	defer faceHackFile.Close()
+
+	faceHackImg, err := jpeg.Decode(faceHackFile)
+	if err != nil {
+		qq.logger.Error("failed to decode face hack image", zap.Error(err))
+		return nil, err
+	}
+	faceHackImg = imaging.Resize(faceHackImg, FaceHackSize, FaceHackSize, imaging.Lanczos)
+
+	srcImgBytes, err := io.ReadAll(srcImg)
+	if err != nil {
+		qq.logger.Error("failed to read image", zap.Error(err))
+		return nil, err
+	}
+
+	var srcImgDecoded image.Image
+	srcImgDecoded, _, err = image.Decode(bytes.NewReader(srcImgBytes))
+	if err != nil {
+		qq.logger.Error("failed to decode image", zap.Error(err))
+		return nil, err
+	}
+
+	srcImgWidth := srcImgDecoded.Bounds().Max.X
+	srcImgHeight := srcImgDecoded.Bounds().Max.Y
+
+	imgWidth, imgHeight := srcImgWidth, srcImgHeight
+
+	if srcImgHeight > srcImgWidth {
+		ratio := float64(srcImgHeight) / float64(srcImgWidth)
+		if ratio > 1.5 {
+			imgHeight = int(math.Floor(float64(srcImgWidth) * 1.5))
+		} else {
+			imgWidth = int(math.Floor(float64(srcImgHeight) / 1.5))
+		}
+	} else {
+		ratio := float64(srcImgWidth) / float64(srcImgHeight)
+		if ratio > 1.5 {
+			imgWidth = int(math.Floor(float64(srcImgHeight) * 1.5))
+		} else {
+			imgHeight = int(math.Floor(float64(srcImgWidth) / 1.5))
+		}
+	}
+
+	imgWidth = int(math.Max(float64(imgWidth), FaceHackSize))
+	imgHeight = int(math.Max(float64(imgHeight), FaceHackSize))
+	srcImgDecoded = imaging.Fill(srcImgDecoded, imgWidth, imgHeight, imaging.Center, imaging.Lanczos)
+
+	var img image.Image
+	if imgHeight > imgWidth {
+		img = imaging.New(imgWidth, imgHeight+FaceHackSize*2+FaceHackSpace*2, color.RGBA{R: 255, G: 255, B: 255})
+		img = imaging.Paste(img, srcImgDecoded, image.Pt(0, FaceHackSize+FaceHackSpace))
+		img = imaging.Paste(img, faceHackImg, image.Pt(int(math.Round(float64(imgWidth/2.0-FaceHackSize/2.0))), 0))
+		img = imaging.Paste(img, faceHackImg, image.Pt(int(math.Round(float64(imgWidth/2.0-FaceHackSize/2.0))), imgHeight+FaceHackSize+FaceHackSpace*2))
+	} else {
+		img = imaging.New(imgWidth+FaceHackSize*2+FaceHackSpace*2, imgHeight, color.RGBA{R: 255, G: 255, B: 255})
+		img = imaging.Paste(img, srcImgDecoded, image.Pt(FaceHackSize+FaceHackSpace, 0))
+		img = imaging.Paste(img, faceHackImg, image.Pt(0, int(math.Round(float64(imgHeight/2.0-FaceHackSize/2.0)))))
+		img = imaging.Paste(img, faceHackImg, image.Pt(imgWidth+FaceHackSize+FaceHackSpace*2, int(math.Round(float64(imgHeight/2.0-FaceHackSize/2.0)))))
+	}
+
+	imgBytes := new(bytes.Buffer)
+	err = jpeg.Encode(imgBytes, img, nil)
+	if err != nil {
+		qq.logger.Error("failed to encode image", zap.Error(err))
+		return nil, err
+	}
+	return imgBytes, nil
 }
