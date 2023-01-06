@@ -97,12 +97,13 @@ func NewQQNeuralStyle(proxies []string, cascade, faceHack io.Reader, logger *zap
 		}
 	}
 
-	faceHackImg, err := jpeg.Decode(faceHack)
+	var err error
+	qq.faceHackFace, err = jpeg.Decode(faceHack)
 	if err != nil {
 		qq.logger.Error("failed to decode face hack image", zap.Error(err))
 		return nil, err
 	}
-	faceHackImg = imaging.Resize(faceHackImg, FaceHackSize, FaceHackSize, imaging.Lanczos)
+	qq.faceHackFace = imaging.Resize(qq.faceHackFace, FaceHackSize, FaceHackSize, imaging.Lanczos)
 
 	if cascade != nil {
 		cascadeData, err := ioutil.ReadAll(cascade)
