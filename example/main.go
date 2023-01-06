@@ -14,7 +14,7 @@ func main() {
 		panic(err)
 	}
 
-	img, err := os.Open("example/img.jpg")
+	img, err := os.Open("example/0.jpg")
 	if err != nil {
 		panic(err)
 	}

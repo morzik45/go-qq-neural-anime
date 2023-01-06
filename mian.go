@@ -5,13 +5,16 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/disintegration/imaging"
+	pigo "github.com/esimov/pigo/core"
 	"go.uber.org/zap"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"io"
+	"io/ioutil"
 	"math"
 	"math/rand"
 	"net/http"
@@ -21,9 +24,23 @@ import (
 )
 
 const (
-	ApiUrl      = "https://ai.tu.qq.com/trpc.shadow_cv.ai_processor_cgi.AIProcessorCgi/Process"
-	ExtraString = "{\"version\":2}"
-	BusiID      = "ai_painting_anime_entry"
+	ApiUrl        = "https://ai.tu.qq.com/trpc.shadow_cv.ai_processor_cgi.AIProcessorCgi/Process"
+	ExtraString   = "{\"version\":2}"
+	BusiID        = "ai_painting_anime_entry"
+	FaceHackSize  = 170
+	FaceHackSpace = 200
+)
+
+var (
+	cascade             []byte
+	err                 error
+	classifier          *pigo.Pigo
+	ImageIsIllegalErr   = errors.New("image is illegal")
+	InvalidImageErr     = errors.New("invalid image")
+	InvalidCountryErr   = errors.New("invalid country")
+	ServiceUpgradingErr = errors.New("service upgrading")
+	RateLimitErr        = errors.New("rate limit")
+	FaceNotFoundErr     = errors.New("face not found")
 )
 
 type Style struct {
@@ -61,7 +78,7 @@ func NewQQNeuralStyle(proxies []string, logger *zap.Logger) (*Style, error) {
 			return nil, fmt.Errorf("failed to parse proxy url: %w", err)
 		}
 		qq.Clients = append(qq.Clients, &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout: 25 * time.Second,
 			Transport: &http.Transport{
 				Proxy: http.ProxyURL(proxyUrl),
 			},
@@ -96,7 +113,7 @@ func (qq *Style) setHeaders(req *http.Request, length int) {
 	}
 }
 
-func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
+func (qq *Style) request(img io.Reader, client *http.Client, isRetry ...bool) (string, error) {
 	imgBytes, err := io.ReadAll(img)
 	if err != nil {
 		qq.logger.Error("failed to read image", zap.Error(err))
@@ -144,29 +161,32 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 	switch response.Msg {
 	case "VOLUMN_LIMIT":
 		qq.logger.Error("volumn limit")
-		return "", fmt.Errorf("rate limit exceeded")
+		return "", RateLimitErr
 	case "IMG_ILLEGAL":
-		qq.logger.Error("image illegal")
-		return "", fmt.Errorf("image is illegal")
+		qq.logger.Error(ImageIsIllegalErr.Error())
+		return "", ImageIsIllegalErr
 	}
 
 	switch response.Code {
 	case 1001:
-		qq.logger.Error("face not found")
+		qq.logger.Error("face not found FROM API")
+		if len(isRetry) > 0 {
+			return "", FaceNotFoundErr
+		}
 		faceHackImg, err := qq.FaceHack(bytes.NewBuffer(imgBytes))
 		if err != nil {
 			return "", err
 		}
 		return qq.request(faceHackImg, client)
 	case -2100: // request image is invalid
-		qq.logger.Error("invalid image")
-		return "", fmt.Errorf("image is invalid")
+		qq.logger.Error(InvalidImageErr.Error())
+		return "", InvalidImageErr
 	case 2119: // user_ip_country
-		qq.logger.Error("invalid country")
-		return "", fmt.Errorf("user ip country")
+		qq.logger.Error(InvalidCountryErr.Error())
+		return "", InvalidCountryErr
 	case -2111: // service upgrading
-		qq.logger.Error("service upgrading")
-		return "", fmt.Errorf("service upgrading")
+		qq.logger.Error(ServiceUpgradingErr.Error())
+		return "", ServiceUpgradingErr
 	}
 
 	if response.Code != 0 || response.Msg != "" {
@@ -192,7 +212,24 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 
 func (qq *Style) Process(img io.Reader) (io.Reader, error) {
 	client := qq.getClient()
-	imgUrl, err := qq.request(img, client)
+	data, err := ioutil.ReadAll(img)
+	if err != nil {
+		return nil, err
+	}
+
+	if !qq.findFaces(bytes.NewBuffer(data)) {
+		qq.logger.Info("no face found")
+		faceHackImg, err := qq.FaceHack(bytes.NewBuffer(data))
+		if err != nil {
+			return nil, err
+		}
+		data, err = ioutil.ReadAll(faceHackImg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	imgUrl, err := qq.request(bytes.NewBuffer(data), client)
 	if err != nil {
 		qq.logger.Error("failed to request", zap.Error(err))
 		return nil, err
@@ -275,11 +312,6 @@ func (qq *Style) cropImage(img io.Reader) (io.Reader, error) {
 	return imgCroppedBytes, nil
 }
 
-const (
-	FaceHackSize  = 170
-	FaceHackSpace = 200
-)
-
 func (qq *Style) FaceHack(srcImg io.Reader) (io.Reader, error) {
 	faceHackFile, err := os.Open("face_hack.jpg")
 	if err != nil {
@@ -353,4 +385,45 @@ func (qq *Style) FaceHack(srcImg io.Reader) (io.Reader, error) {
 		return nil, err
 	}
 	return imgBytes, nil
+}
+
+func (qq *Style) findFaces(img io.Reader) bool {
+	src, err := pigo.DecodeImage(img)
+	if err != nil {
+		qq.logger.Error("failed to decode image", zap.Error(err))
+		return false
+	}
+	cols, rows := src.Bounds().Max.X, src.Bounds().Max.Y
+	return len(qq.clusterDetection(pigo.RgbToGrayscale(src), rows, cols)) > 0
+}
+
+func (qq *Style) clusterDetection(pixels []uint8, rows, cols int) []pigo.Detection {
+	cParams := pigo.CascadeParams{
+		MinSize:     100,
+		MaxSize:     600,
+		ShiftFactor: 0.15,
+		ScaleFactor: 1.1,
+		ImageParams: pigo.ImageParams{
+			Pixels: pixels,
+			Rows:   rows,
+			Cols:   cols,
+			Dim:    cols,
+		},
+	}
+
+	if len(cascade) == 0 {
+		cascade, err = ioutil.ReadFile("facefinder")
+		if err != nil {
+			qq.logger.Error("failed to read cascade file", zap.Error(err))
+			return nil
+		}
+		p := pigo.NewPigo()
+		classifier, err = p.Unpack(cascade)
+		if err != nil {
+			qq.logger.Error("failed to unpack cascade file", zap.Error(err))
+			return nil
+		}
+	}
+	dets := classifier.RunCascade(cParams, 0.0)
+	return classifier.ClusterDetections(dets, 0.2)
 }
