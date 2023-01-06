@@ -19,7 +19,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"os"
 	"time"
 )
 
@@ -41,9 +40,10 @@ var (
 )
 
 type Style struct {
-	Clients    []*http.Client
-	classifier *pigo.Pigo
-	logger     *zap.Logger
+	Clients      []*http.Client
+	classifier   *pigo.Pigo
+	faceHackFace image.Image
+	logger       *zap.Logger
 
 	getClient func() *http.Client
 }
@@ -62,7 +62,7 @@ type Extra struct {
 	Videos  []string `json:"videos"`
 }
 
-func NewQQNeuralStyle(proxies []string, cascade io.Reader, logger *zap.Logger) (*Style, error) {
+func NewQQNeuralStyle(proxies []string, cascade, faceHack io.Reader, logger *zap.Logger) (*Style, error) {
 	qq := Style{
 		logger: logger,
 	}
@@ -96,6 +96,13 @@ func NewQQNeuralStyle(proxies []string, cascade io.Reader, logger *zap.Logger) (
 			return qq.Clients[rand.Intn(len(qq.Clients))]
 		}
 	}
+
+	faceHackImg, err := jpeg.Decode(faceHack)
+	if err != nil {
+		qq.logger.Error("failed to decode face hack image", zap.Error(err))
+		return nil, err
+	}
+	faceHackImg = imaging.Resize(faceHackImg, FaceHackSize, FaceHackSize, imaging.Lanczos)
 
 	if cascade != nil {
 		cascadeData, err := ioutil.ReadAll(cascade)
@@ -324,20 +331,6 @@ func (qq *Style) cropImage(img io.Reader) (io.Reader, error) {
 }
 
 func (qq *Style) FaceHack(srcImg io.Reader) (io.Reader, error) {
-	faceHackFile, err := os.Open("face_hack.jpg")
-	if err != nil {
-		qq.logger.Error("failed to open face hack file", zap.Error(err))
-		return nil, err
-	}
-	defer faceHackFile.Close()
-
-	faceHackImg, err := jpeg.Decode(faceHackFile)
-	if err != nil {
-		qq.logger.Error("failed to decode face hack image", zap.Error(err))
-		return nil, err
-	}
-	faceHackImg = imaging.Resize(faceHackImg, FaceHackSize, FaceHackSize, imaging.Lanczos)
-
 	srcImgBytes, err := io.ReadAll(srcImg)
 	if err != nil {
 		qq.logger.Error("failed to read image", zap.Error(err))
@@ -380,13 +373,13 @@ func (qq *Style) FaceHack(srcImg io.Reader) (io.Reader, error) {
 	if imgHeight > imgWidth {
 		img = imaging.New(imgWidth, imgHeight+FaceHackSize*2+FaceHackSpace*2, color.RGBA{R: 255, G: 255, B: 255})
 		img = imaging.Paste(img, srcImgDecoded, image.Pt(0, FaceHackSize+FaceHackSpace))
-		img = imaging.Paste(img, faceHackImg, image.Pt(int(math.Round(float64(imgWidth/2.0-FaceHackSize/2.0))), 0))
-		img = imaging.Paste(img, faceHackImg, image.Pt(int(math.Round(float64(imgWidth/2.0-FaceHackSize/2.0))), imgHeight+FaceHackSize+FaceHackSpace*2))
+		img = imaging.Paste(img, qq.faceHackFace, image.Pt(int(math.Round(float64(imgWidth/2.0-FaceHackSize/2.0))), 0))
+		img = imaging.Paste(img, qq.faceHackFace, image.Pt(int(math.Round(float64(imgWidth/2.0-FaceHackSize/2.0))), imgHeight+FaceHackSize+FaceHackSpace*2))
 	} else {
 		img = imaging.New(imgWidth+FaceHackSize*2+FaceHackSpace*2, imgHeight, color.RGBA{R: 255, G: 255, B: 255})
 		img = imaging.Paste(img, srcImgDecoded, image.Pt(FaceHackSize+FaceHackSpace, 0))
-		img = imaging.Paste(img, faceHackImg, image.Pt(0, int(math.Round(float64(imgHeight/2.0-FaceHackSize/2.0)))))
-		img = imaging.Paste(img, faceHackImg, image.Pt(imgWidth+FaceHackSize+FaceHackSpace*2, int(math.Round(float64(imgHeight/2.0-FaceHackSize/2.0)))))
+		img = imaging.Paste(img, qq.faceHackFace, image.Pt(0, int(math.Round(float64(imgHeight/2.0-FaceHackSize/2.0)))))
+		img = imaging.Paste(img, qq.faceHackFace, image.Pt(imgWidth+FaceHackSize+FaceHackSpace*2, int(math.Round(float64(imgHeight/2.0-FaceHackSize/2.0)))))
 	}
 
 	imgBytes := new(bytes.Buffer)
