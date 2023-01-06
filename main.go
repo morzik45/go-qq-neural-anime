@@ -32,9 +32,6 @@ const (
 )
 
 var (
-	cascade             []byte
-	err                 error
-	classifier          *pigo.Pigo
 	ImageIsIllegalErr   = errors.New("image is illegal")
 	InvalidImageErr     = errors.New("invalid image")
 	InvalidCountryErr   = errors.New("invalid country")
@@ -44,8 +41,9 @@ var (
 )
 
 type Style struct {
-	Clients []*http.Client
-	logger  *zap.Logger
+	Clients    []*http.Client
+	classifier *pigo.Pigo
+	logger     *zap.Logger
 
 	getClient func() *http.Client
 }
@@ -64,7 +62,7 @@ type Extra struct {
 	Videos  []string `json:"videos"`
 }
 
-func NewQQNeuralStyle(proxies []string, logger *zap.Logger) (*Style, error) {
+func NewQQNeuralStyle(proxies []string, cascade io.Reader, logger *zap.Logger) (*Style, error) {
 	qq := Style{
 		logger: logger,
 	}
@@ -99,6 +97,19 @@ func NewQQNeuralStyle(proxies []string, logger *zap.Logger) (*Style, error) {
 		}
 	}
 
+	if cascade != nil {
+		cascadeData, err := ioutil.ReadAll(cascade)
+		if err != nil {
+			qq.logger.Error("failed to read cascade file", zap.Error(err))
+			return nil, fmt.Errorf("failed to read cascade file: %w", err)
+		}
+		qq.classifier, err = pigo.NewPigo().Unpack(cascadeData)
+		if err != nil {
+			qq.logger.Error("failed to unpack cascade file", zap.Error(err))
+			return nil, fmt.Errorf("failed to unpack cascade file: %w", err)
+		}
+		qq.logger.Info("qq: cascade file loaded")
+	}
 	return &qq, nil
 }
 
@@ -217,7 +228,7 @@ func (qq *Style) Process(img io.Reader) (io.Reader, error) {
 		return nil, err
 	}
 
-	if !qq.findFaces(bytes.NewBuffer(data)) {
+	if qq.classifier != nil && !qq.findFaces(bytes.NewBuffer(data)) {
 		qq.logger.Info("no face found")
 		faceHackImg, err := qq.FaceHack(bytes.NewBuffer(data))
 		if err != nil {
@@ -410,20 +421,6 @@ func (qq *Style) clusterDetection(pixels []uint8, rows, cols int) []pigo.Detecti
 			Dim:    cols,
 		},
 	}
-
-	if len(cascade) == 0 {
-		cascade, err = ioutil.ReadFile("facefinder")
-		if err != nil {
-			qq.logger.Error("failed to read cascade file", zap.Error(err))
-			return nil
-		}
-		p := pigo.NewPigo()
-		classifier, err = p.Unpack(cascade)
-		if err != nil {
-			qq.logger.Error("failed to unpack cascade file", zap.Error(err))
-			return nil
-		}
-	}
-	dets := classifier.RunCascade(cParams, 0.0)
-	return classifier.ClusterDetections(dets, 0.2)
+	dets := qq.classifier.RunCascade(cParams, 0.0)
+	return qq.classifier.ClusterDetections(dets, 0.2)
 }

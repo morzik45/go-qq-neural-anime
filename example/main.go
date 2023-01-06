@@ -9,12 +9,18 @@ import (
 
 func main() {
 	proxies := strings.Split(os.Getenv("PROXIES"), ",")
-	qq, err := qqNeural.NewQQNeuralStyle(proxies, nil)
+
+	cascade, err := os.Open("facefinder")
 	if err != nil {
 		panic(err)
 	}
 
-	img, err := os.Open("example/0.jpg")
+	qq, err := qqNeural.NewQQNeuralStyle(proxies, cascade, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	img, err := os.Open("example/1.jpg")
 	if err != nil {
 		panic(err)
 	}
