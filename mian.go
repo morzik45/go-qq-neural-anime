@@ -149,7 +149,7 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 
 	switch response.Code {
 	case 1001:
-		qq.logger.Error("invalid busiId")
+		qq.logger.Error("face not found")
 		return "", fmt.Errorf("face not found")
 	case -2100: // request image is invalid
 		qq.logger.Error("invalid image")
@@ -160,6 +160,13 @@ func (qq *Style) request(img io.Reader, client *http.Client) (string, error) {
 	case -2111: // service upgrading
 		qq.logger.Error("service upgrading")
 		return "", fmt.Errorf("service upgrading")
+	}
+
+	if response.Code != 0 || response.Msg != "" {
+		qq.logger.Error("unknown error", zap.Any("response", response))
+		if response.Extra == "" {
+			return "", fmt.Errorf("unknown error")
+		}
 	}
 
 	var extra Extra
