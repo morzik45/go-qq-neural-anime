@@ -211,6 +211,8 @@ func (qq *Style) request(img io.Reader, client *http.Client, isRetry ...bool) (s
 		return "", ServiceUpgradingErr
 	case -2110: // can't get bypass result from redis:
 		return "", OthersErr
+	case 2114: // b'input img illegal'
+		return "", ImageIsIllegalErr
 	}
 
 	if response.Code != 0 || response.Msg != "" {
