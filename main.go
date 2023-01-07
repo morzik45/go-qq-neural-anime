@@ -19,6 +19,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -37,13 +38,15 @@ var (
 	ServiceUpgradingErr = errors.New("service upgrading")
 	RateLimitErr        = errors.New("rate limit")
 	FaceNotFoundErr     = errors.New("face not found")
+	OthersErr           = errors.New("others")
 )
 
 type Style struct {
-	Clients      []*http.Client
-	classifier   *pigo.Pigo
-	faceHackFace image.Image
-	logger       *zap.Logger
+	Clients       []*http.Client
+	classifier    *pigo.Pigo
+	findFaceMutex sync.Mutex
+	faceHackFace  image.Image
+	logger        *zap.Logger
 
 	getClient func() *http.Client
 }
@@ -179,16 +182,13 @@ func (qq *Style) request(img io.Reader, client *http.Client, isRetry ...bool) (s
 
 	switch response.Msg {
 	case "VOLUMN_LIMIT":
-		qq.logger.Error("volumn limit")
 		return "", RateLimitErr
 	case "IMG_ILLEGAL":
-		qq.logger.Error(ImageIsIllegalErr.Error())
 		return "", ImageIsIllegalErr
 	}
 
 	switch response.Code {
 	case 1001:
-		qq.logger.Error("face not found FROM API")
 		if len(isRetry) > 0 {
 			return "", FaceNotFoundErr
 		}
@@ -198,14 +198,13 @@ func (qq *Style) request(img io.Reader, client *http.Client, isRetry ...bool) (s
 		}
 		return qq.request(faceHackImg, client, true)
 	case -2100: // request image is invalid
-		qq.logger.Error(InvalidImageErr.Error())
 		return "", InvalidImageErr
 	case 2119: // user_ip_country
-		qq.logger.Error(InvalidCountryErr.Error())
 		return "", InvalidCountryErr
 	case -2111: // service upgrading
-		qq.logger.Error(ServiceUpgradingErr.Error())
 		return "", ServiceUpgradingErr
+	case -2110: // can't get bypass result from redis:
+		return "", OthersErr
 	}
 
 	if response.Code != 0 || response.Msg != "" {
@@ -237,7 +236,6 @@ func (qq *Style) Process(img io.Reader) (io.Reader, error) {
 	}
 
 	if qq.classifier != nil && !qq.findFaces(bytes.NewBuffer(data)) {
-		qq.logger.Info("no face found")
 		faceHackImg, err := qq.FaceHack(bytes.NewBuffer(data))
 		if err != nil {
 			return nil, err
@@ -250,13 +248,11 @@ func (qq *Style) Process(img io.Reader) (io.Reader, error) {
 
 	imgUrl, err := qq.request(bytes.NewBuffer(data), client)
 	if err != nil {
-		qq.logger.Error("failed to request", zap.Error(err))
 		return nil, err
 	}
 	var qqImg io.Reader
 	qqImg, err = qq.downloadImage(imgUrl, client)
 	if err != nil {
-		qq.logger.Error("failed to download image", zap.Error(err))
 		return nil, err
 	}
 
@@ -415,6 +411,8 @@ func (qq *Style) clusterDetection(pixels []uint8, rows, cols int) []pigo.Detecti
 			Dim:    cols,
 		},
 	}
+	qq.findFaceMutex.Lock()
+	defer qq.findFaceMutex.Unlock()
 	dets := qq.classifier.RunCascade(cParams, 0.0)
 	return qq.classifier.ClusterDetections(dets, 0.2)
 }
