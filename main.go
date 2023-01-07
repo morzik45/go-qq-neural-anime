@@ -168,7 +168,13 @@ func (qq *Style) request(img io.Reader, client *http.Client, isRetry ...bool) (s
 	var resp *http.Response
 	resp, err = client.Do(req)
 	if err != nil {
-		qq.logger.Error("failed to send request", zap.Error(err))
+		proxy := client.Transport.(*http.Transport).Proxy
+		if proxy != nil {
+			proxyUrl, _ := proxy(req)
+			qq.logger.Error("failed to send request2", zap.Error(err), zap.String("proxy", proxyUrl.String()))
+		} else {
+			qq.logger.Error("failed to send request2", zap.Error(err))
+		}
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -270,7 +276,13 @@ func (qq *Style) downloadImage(url string, client *http.Client) (io.Reader, erro
 	var resp *http.Response
 	resp, err = client.Do(req)
 	if err != nil {
-		qq.logger.Error("failed to send request", zap.Error(err))
+		proxy := client.Transport.(*http.Transport).Proxy
+		if proxy != nil {
+			proxyUrl, _ := proxy(req)
+			qq.logger.Error("failed to send request2", zap.Error(err), zap.String("proxy", proxyUrl.String()))
+		} else {
+			qq.logger.Error("failed to send request2", zap.Error(err))
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
