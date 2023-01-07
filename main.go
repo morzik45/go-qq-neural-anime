@@ -79,7 +79,7 @@ func NewQQNeuralStyle(proxies []string, cascade, faceHack io.Reader, logger *zap
 			return nil, fmt.Errorf("failed to parse proxy url: %w", err)
 		}
 		qq.Clients = append(qq.Clients, &http.Client{
-			Timeout: 25 * time.Second,
+			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				Proxy: http.ProxyURL(proxyUrl),
 			},
