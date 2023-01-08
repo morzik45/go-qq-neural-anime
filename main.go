@@ -42,13 +42,13 @@ var (
 )
 
 type Style struct {
-	Clients       []*http.Client
+	Proxies       []*url.URL
 	classifier    *pigo.Pigo
 	findFaceMutex sync.Mutex
 	faceHackFace  image.Image
 	logger        *zap.Logger
 
-	getClient func() *http.Client
+	proxy func(*http.Request) (*url.URL, error)
 }
 
 type Response struct {
@@ -78,25 +78,20 @@ func NewQQNeuralStyle(proxies []string, cascade, faceHack io.Reader, logger *zap
 			qq.logger.Error("failed to parse proxy url", zap.Error(err))
 			return nil, fmt.Errorf("failed to parse proxy url: %w", err)
 		}
-		qq.Clients = append(qq.Clients, &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				Proxy: http.ProxyURL(proxyUrl),
-			},
-		})
+		qq.Proxies = append(qq.Proxies, proxyUrl)
 	}
 
-	switch len(qq.Clients) {
+	switch len(qq.Proxies) {
 	case 0:
 		qq.logger.Error("no proxy provided")
 		return nil, fmt.Errorf("no proxies provided")
 	case 1:
-		qq.getClient = func() *http.Client {
-			return qq.Clients[0]
+		qq.proxy = func(*http.Request) (*url.URL, error) {
+			return qq.Proxies[0], nil
 		}
 	default:
-		qq.getClient = func() *http.Client {
-			return qq.Clients[rand.Intn(len(qq.Clients))]
+		qq.proxy = func(*http.Request) (*url.URL, error) {
+			return qq.Proxies[rand.Intn(len(qq.Proxies))], nil
 		}
 	}
 
@@ -237,7 +232,13 @@ func (qq *Style) request(img io.Reader, client *http.Client, isRetry ...bool) (s
 }
 
 func (qq *Style) Process(img io.Reader) (io.Reader, error) {
-	client := qq.getClient()
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy: qq.proxy,
+		},
+	}
+	defer client.CloseIdleConnections()
 	data, err := ioutil.ReadAll(img)
 	if err != nil {
 		return nil, err

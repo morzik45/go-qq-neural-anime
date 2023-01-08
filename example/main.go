@@ -15,7 +15,12 @@ func main() {
 		panic(err)
 	}
 
-	qq, err := qqNeural.NewQQNeuralStyle(proxies, cascade, nil)
+	faceHack, err := os.Open("face_hack.jpg")
+	if err != nil {
+		panic(err)
+	}
+
+	qq, err := qqNeural.NewQQNeuralStyle(proxies, cascade, faceHack, nil)
 	if err != nil {
 		panic(err)
 	}
